@@ -38,6 +38,7 @@ sol_storage! {
     #[entrypoint]
     pub struct Counter {
         uint256 number;
+        mapping(uint256 => uint256) swords;
     }
 }
 
@@ -54,27 +55,19 @@ impl Counter {
         self.number.set(new_number);
     }
 
-    /// Sets a number in storage to a user-specified value.
-    pub fn mul_number(&mut self, new_number: U256) {
-        self.number.set(new_number * self.number.get());
-    }
-
-    /// Sets a number in storage to a user-specified value.
-    pub fn add_number(&mut self, new_number: U256) {
-        self.number.set(new_number + self.number.get());
-    }
-
     /// Increments `number` and updates its value in storage.
-    pub fn increment(&mut self) {
+    pub fn increment666(&mut self) {
         let number = self.number.get();
         self.set_number(number + U256::from(1));
     }
 
-    /// Adds the wei value from msg_value to the number in storage.
-    #[payable]
-    pub fn add_from_msg_value(&mut self) {
-        let number = self.number.get();
-        self.set_number(number + self.vm().msg_value());
+    pub fn get_sword_count(&self, color: U256) -> U256 {
+        self.swords.get(color)
+    }
+
+    pub fn increment_sword(&mut self, color: U256) {
+        let count = self.get_sword_count(color);
+        self.swords.insert(color, count + U256::from(1));
     }
 }
 
@@ -93,19 +86,7 @@ mod test {
         contract.increment();
         assert_eq!(U256::from(1), contract.number());
 
-        contract.add_number(U256::from(3));
-        assert_eq!(U256::from(4), contract.number());
-
-        contract.mul_number(U256::from(2));
-        assert_eq!(U256::from(8), contract.number());
-
         contract.set_number(U256::from(100));
         assert_eq!(U256::from(100), contract.number());
-
-        // Override the msg value for future contract method invocations.
-        vm.set_value(U256::from(2));
-
-        contract.add_from_msg_value();
-        assert_eq!(U256::from(102), contract.number());
     }
 }
