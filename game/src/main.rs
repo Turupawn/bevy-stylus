@@ -1,25 +1,9 @@
 use bevy::prelude::*;
-use dotenv::dotenv;
-use ethers::prelude::{Provider, Http, SignerMiddleware, LocalWallet, abigen, Middleware};
-use ethers::signers::Signer;
 use eyre::Result;
-use std::{str::FromStr, sync::Arc};
+use tokio::sync::mpsc as tokio_mpsc;
 
-
-use ethers::{
-    types::{Address, U256},
-};
-
-// Generate the contract bindings
-abigen!(
-    SwordCollection,
-    r#"[
-        function number() external view returns (uint256)
-        function increment666() external
-        function getSwordCount(uint256 color) external view returns (uint256)
-        function incrementSword(uint256 color) external
-    ]"#
-);
+mod blockchain;
+use blockchain::BlockchainClient;
 
 // Game components
 #[derive(Component)]
@@ -84,8 +68,7 @@ struct SpriteAssets {
 #[derive(Resource)]
 struct GameState {
     swords_collected: Vec<u8>,
-    contract_client: Option<Arc<SignerMiddleware<Provider<Http>, LocalWallet>>>,
-    contract_address: Option<Address>,
+    blockchain_client: Option<BlockchainClient>,
     player_position: Vec3,
     last_direction: Vec3,
     player_moving: bool,
@@ -94,6 +77,7 @@ struct GameState {
     swing_frame: u8,
     swing_timer: f32,
     swing_color: u8,
+    blockchain_sender: Option<tokio_mpsc::UnboundedSender<u8>>,
 }
 
 const PLAYER_SPEED: f32 = 400.0; // Increased from 200.0 for 4x sprites
@@ -133,16 +117,25 @@ fn main() -> Result<()> {
 }
 
 async fn init_game_state() -> Result<GameState> {
-    dotenv().ok();
-
-    println!("RPC_URL: {}", std::env::var("RPC_URL").unwrap());
-    println!("STYLUS_CONTRACT_ADDRESS: {}", std::env::var("STYLUS_CONTRACT_ADDRESS").unwrap());
-    println!("PRIVATE_KEY: {}", std::env::var("PRIVATE_KEY").unwrap());
+    let blockchain_client = BlockchainClient::new().await?;
+    let swords_collected = blockchain_client.load_existing_swords().await?;
     
-    let mut game_state = GameState {
-        swords_collected: Vec::new(),
-        contract_client: None,
-        contract_address: None,
+    // Create a channel for blockchain operations
+    let (tx, mut rx) = tokio_mpsc::unbounded_channel::<u8>();
+    
+    // Spawn a background task to handle blockchain operations
+    let client = blockchain_client.clone();
+    tokio::spawn(async move {
+        while let Some(color) = rx.recv().await {
+            if let Err(e) = client.save_sword(color).await {
+                eprintln!("Failed to save sword to contract: {}", e);
+            }
+        }
+    });
+    
+    let game_state = GameState {
+        swords_collected,
+        blockchain_client: Some(blockchain_client),
         player_position: Vec3::ZERO,
         last_direction: Vec3::new(1.0, 0.0, 0.0), // Default to facing right
         player_moving: false,
@@ -151,39 +144,8 @@ async fn init_game_state() -> Result<GameState> {
         swing_frame: 0,
         swing_timer: 0.0,
         swing_color: 1, // Start with blue (index 1)
+        blockchain_sender: Some(tx),
     };
-
-    if let (Ok(rpc_url), Ok(contract_addr), Ok(privkey)) = (
-        std::env::var("RPC_URL"),
-        std::env::var("STYLUS_CONTRACT_ADDRESS"),
-        std::env::var("PRIVATE_KEY"),
-    ) {
-        let provider = Provider::<Http>::try_from(rpc_url)?;
-        let wallet = LocalWallet::from_str(&privkey)?;
-        let chain_id = provider.get_chainid().await?.as_u64();
-        let client = Arc::new(SignerMiddleware::new(
-            provider,
-            wallet.with_chain_id(chain_id),
-        ));
-
-        let contract_address: Address = contract_addr.parse()?;
-        let contract = SwordCollection::new(contract_address, client.clone());
-
-        // Load existing swords
-        for color in 0u8..3u8 {
-            println!("Loading sword count for colorr: {}", color);
-            let count: U256 = contract.get_sword_count(U256::from(color)).call().await?;
-            //let count = contract.number().call().await?;
-            println!("counting: {}", count);
-            println!("fin");
-            for _ in 0..count.as_u64() {
-                game_state.swords_collected.push(color);
-            }
-        }
-
-        game_state.contract_client = Some(client);
-        game_state.contract_address = Some(contract_address);
-    }
 
     Ok(game_state)
 }
@@ -573,15 +535,11 @@ fn collect_swords(
             game_state.swing_color = sword.color;
             commands.entity(sword_entity).despawn();
             
-            // Save to contract
-            if let (Some(client), Some(address)) = (&game_state.contract_client, game_state.contract_address) {
-                let contract = SwordCollection::new(address.clone(), client.clone());
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    if let Err(e) = contract.increment_sword(U256::from(sword.color)).send().await {
-                        eprintln!("Failed to save sword to contract: {}", e);
-                    }
-                });
+            // Send the sword save to the blockchain task
+            if let Some(sender) = &game_state.blockchain_sender {
+                if let Err(e) = sender.send(sword.color) {
+                    eprintln!("Failed to send sword save to blockchain task: {}", e);
+                }
             }
         }
     }
@@ -609,3 +567,5 @@ fn update_ui(mut text_query: Query<&mut Text>, game_state: Res<GameState>) {
         }
     }
 }
+
+
