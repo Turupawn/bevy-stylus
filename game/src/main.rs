@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use eyre::Result;
-use tokio::sync::mpsc as tokio_mpsc;
 
 mod blockchain;
-use blockchain::BlockchainClient;
 
-// Game components
+// BLOCKCHAIN CODE - COMMENT OUT TO DISABLE
+use ethers::types::U256;
+use blockchain::{BlockchainPlugin, BlockchainClient};
+
 #[derive(Component)]
 struct Player;
 
@@ -49,26 +50,18 @@ enum PlayerDirection {
 
 #[derive(Resource)]
 struct SpriteAssets {
-    // Player sprites (8 total: 2 for each direction)
     player_up: Vec<Handle<Image>>,
     player_down: Vec<Handle<Image>>,
     player_left: Vec<Handle<Image>>,
     player_right: Vec<Handle<Image>>,
-    
-    // Enemy sprites (2 total)
     enemy: Vec<Handle<Image>>,
-    
-    // Sword swing sprites (16 per color: 4 for each direction)
-    sword_swings: Vec<Vec<Handle<Image>>>, // 3 colors, 16 sprites each
-    
-    // Item drop sprites (1 per color)
-    item_drops: Vec<Handle<Image>>, // 3 colors
+    sword_swings: Vec<Vec<Handle<Image>>>,
+    item_drops: Vec<Handle<Image>>,
 }
 
 #[derive(Resource)]
 struct GameState {
     swords_collected: Vec<u8>,
-    blockchain_client: Option<BlockchainClient>,
     player_position: Vec3,
     last_direction: Vec3,
     player_moving: bool,
@@ -77,19 +70,26 @@ struct GameState {
     swing_frame: u8,
     swing_timer: f32,
     swing_color: u8,
-    blockchain_sender: Option<tokio_mpsc::UnboundedSender<u8>>,
 }
 
-const PLAYER_SPEED: f32 = 400.0; // Increased from 200.0 for 4x sprites
+const PLAYER_SPEED: f32 = 400.0;
 const ENEMY_SPAWN_RATE: f32 = 2.0;
 
 fn main() -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    let game_state = rt.block_on(init_game_state())?;
-
     App::new()
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .insert_resource(game_state)
+        .add_plugins(BlockchainPlugin) // BLOCKCHAIN
+        .insert_resource(GameState {
+            swords_collected: Vec::new(),
+            player_position: Vec3::ZERO,
+            last_direction: Vec3::new(1.0, 0.0, 0.0),
+            player_moving: false,
+            player_direction: PlayerDirection::Right,
+            is_swinging: false,
+            swing_frame: 0,
+            swing_timer: 0.0,
+            swing_color: 1,
+        })
         .insert_resource(SpriteAssets {
             player_up: Vec::new(),
             player_down: Vec::new(),
@@ -100,6 +100,7 @@ fn main() -> Result<()> {
             item_drops: Vec::new(),
         })
         .add_systems(Startup, (load_assets, setup.after(load_assets)))
+        .add_systems(Update, load_existing_swords.run_if(resource_exists::<BlockchainClient>)) // BLOCKCHAIN
         .add_systems(Update, (
             player_movement,
             player_animation,
@@ -116,46 +117,35 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn init_game_state() -> Result<GameState> {
-    let blockchain_client = BlockchainClient::new().await?;
-    let swords_collected = blockchain_client.load_existing_swords().await?;
-    
-    // Create a channel for blockchain operations
-    let (tx, mut rx) = tokio_mpsc::unbounded_channel::<u8>();
-    
-    // Spawn a background task to handle blockchain operations
-    let client = blockchain_client.clone();
-    tokio::spawn(async move {
-        while let Some(color) = rx.recv().await {
-            if let Err(e) = client.save_sword(color).await {
-                eprintln!("Failed to save sword to contract: {}", e);
-            }
-        }
-    });
-    
-    let game_state = GameState {
-        swords_collected,
-        blockchain_client: Some(blockchain_client),
-        player_position: Vec3::ZERO,
-        last_direction: Vec3::new(1.0, 0.0, 0.0), // Default to facing right
-        player_moving: false,
-        player_direction: PlayerDirection::Right,
-        is_swinging: false,
-        swing_frame: 0,
-        swing_timer: 0.0,
-        swing_color: 1, // Start with blue (index 1)
-        blockchain_sender: Some(tx),
-    };
-
-    Ok(game_state)
+// BLOCKCHAIN FUNCTIONS - COMMENT OUT TO DISABLE
+fn load_existing_swords(blockchain_client: Res<BlockchainClient>, mut game_state: ResMut<GameState>) {
+    if game_state.swords_collected.is_empty() {
+        let client = blockchain_client.clone();
+        let swords = std::thread::spawn(move || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let mut swords_collected = Vec::new();
+                if let Some(contract) = &client.contract {
+                    for color in 0u8..3u8 {
+                        if let Ok(count) = contract.get_sword_count(U256::from(color)).call().await {
+                            for _ in 0..count.as_u64() {
+                                swords_collected.push(color);
+                            }
+                        }
+                    }
+                }
+                swords_collected
+            })
+        }).join().unwrap_or_default();
+        game_state.swords_collected = swords;
+    }
 }
+
 
 fn load_assets(
     _commands: Commands,
     asset_server: Res<AssetServer>,
     mut sprite_assets: ResMut<SpriteAssets>,
 ) {
-    // Load player sprites (2 frames for each direction)
     sprite_assets.player_up.push(asset_server.load("sprites/player/up_1.png"));
     sprite_assets.player_up.push(asset_server.load("sprites/player/up_2.png"));
     sprite_assets.player_down.push(asset_server.load("sprites/player/down_1.png"));
@@ -165,11 +155,9 @@ fn load_assets(
     sprite_assets.player_right.push(asset_server.load("sprites/player/right_1.png"));
     sprite_assets.player_right.push(asset_server.load("sprites/player/right_2.png"));
     
-    // Load enemy sprites (2 frames)
     sprite_assets.enemy.push(asset_server.load("sprites/enemy/enemy_1.png"));
     sprite_assets.enemy.push(asset_server.load("sprites/enemy/enemy_2.png"));
     
-    // Load sword swing sprites (16 frames per color, 4 per direction)
     let color_names = ["red", "blue", "green"];
     let direction_names = ["up", "down", "left", "right"];
     
@@ -185,7 +173,6 @@ fn load_assets(
         }
     }
     
-    // Load item drop sprites (1 per color)
     for (_color_idx, color_name) in color_names.iter().enumerate() {
         sprite_assets.item_drops.push(asset_server.load(&format!("sprites/items/{}.png", color_name)));
     }
@@ -194,13 +181,11 @@ fn load_assets(
 fn setup(mut commands: Commands, sprite_assets: Res<SpriteAssets>) {
     commands.spawn(Camera2dBundle::default());
 
-    // Check if assets are loaded
     if sprite_assets.player_right.is_empty() {
         eprintln!("Warning: Sprite assets not loaded yet!");
         return;
     }
 
-    // Player
     commands.spawn((
         SpriteBundle {
             texture: sprite_assets.player_right[0].clone(),
@@ -211,14 +196,13 @@ fn setup(mut commands: Commands, sprite_assets: Res<SpriteAssets>) {
         AnimatedSprite {
             current_frame: 0,
             animation_timer: 0.0,
-            animation_speed: 8.0, // 8 FPS
+            animation_speed: 8.0,
             total_frames: 2,
             is_swinging: false,
             swing_color: 0,
         },
     ));
 
-    // UI
     commands.spawn((
         TextBundle::from_sections([
             TextSection::new(
@@ -245,7 +229,6 @@ fn player_movement(
     mut game_state: ResMut<GameState>,
     time: Res<Time>,
 ) {
-    // Don't allow movement while swinging
     if game_state.is_swinging {
         return;
     }
@@ -278,12 +261,10 @@ fn player_movement(
         if direction.length() > 0.0 {
             direction = direction.normalize();
             transform.translation += direction * PLAYER_SPEED * time.delta_seconds();
-            // Update the last direction when moving
             game_state.last_direction = direction;
         }
         
         game_state.player_moving = is_moving;
-        // Update the stored player position
         game_state.player_position = transform.translation;
     }
 }
@@ -292,13 +273,10 @@ fn sword_swing_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut game_state: ResMut<GameState>,
 ) {
-    // Start sword swing if space is pressed and not already swinging
     if keyboard.just_pressed(KeyCode::Space) && !game_state.is_swinging {
         game_state.is_swinging = true;
         game_state.swing_frame = 0;
         game_state.swing_timer = 0.0;
-        // Use the current swing color (starts as blue, changes when collected)
-        // game_state.swing_color is already set from collect_swords
     }
 }
 
@@ -309,26 +287,21 @@ fn player_animation(
     time: Res<Time>,
 ) {
     if let Ok((mut texture, mut animated_sprite)) = player_query.get_single_mut() {
-        // Check if assets are loaded
         if sprite_assets.player_right.is_empty() {
             return;
         }
         
-        // Update swing animation
         if game_state.is_swinging {
             game_state.swing_timer += time.delta_seconds();
             
-            // Animate at 12 FPS
             if game_state.swing_timer >= 1.0 / 12.0 {
                 game_state.swing_frame += 1;
                 game_state.swing_timer = 0.0;
                 
-                // If swing animation is complete, stop swinging
                 if game_state.swing_frame >= 4 {
                     game_state.is_swinging = false;
                     animated_sprite.is_swinging = false;
                 } else {
-                    // Update to sword swing sprite
                     let direction_idx = match game_state.player_direction {
                         PlayerDirection::Up => 0,
                         PlayerDirection::Down => 1,
@@ -338,7 +311,6 @@ fn player_animation(
                     
                     let sprite_idx = direction_idx * 4 + game_state.swing_frame as usize;
                     
-                    // Check bounds
                     if (game_state.swing_color as usize) < sprite_assets.sword_swings.len() && 
                        sprite_idx < sprite_assets.sword_swings[game_state.swing_color as usize].len() {
                         *texture = sprite_assets.sword_swings[game_state.swing_color as usize][sprite_idx].clone();
@@ -346,10 +318,8 @@ fn player_animation(
                 }
             }
         } else {
-            // Normal walking animation
             animated_sprite.animation_timer += time.delta_seconds();
             
-            // Get the appropriate sprite array based on direction
             let sprite_array = match game_state.player_direction {
                 PlayerDirection::Up => &sprite_assets.player_up,
                 PlayerDirection::Down => &sprite_assets.player_down,
@@ -357,21 +327,17 @@ fn player_animation(
                 PlayerDirection::Right => &sprite_assets.player_right,
             };
             
-            // Check if the sprite array has the required frame
             if animated_sprite.current_frame as usize >= sprite_array.len() {
                 return;
             }
             
-            // Update animation frame if moving
             if game_state.player_moving && animated_sprite.animation_timer >= 1.0 / animated_sprite.animation_speed {
                 animated_sprite.current_frame = (animated_sprite.current_frame + 1) % animated_sprite.total_frames;
                 animated_sprite.animation_timer = 0.0;
             } else if !game_state.player_moving {
-                // Reset to first frame when not moving
                 animated_sprite.current_frame = 0;
             }
             
-            // Update texture
             *texture = sprite_array[animated_sprite.current_frame as usize].clone();
         }
     }
@@ -383,7 +349,6 @@ fn enemy_spawning(
     mut timer: Local<f32>,
     sprite_assets: Res<SpriteAssets>,
 ) {
-    // Check if assets are loaded
     if sprite_assets.enemy.is_empty() {
         return;
     }
@@ -392,12 +357,9 @@ fn enemy_spawning(
     if *timer >= ENEMY_SPAWN_RATE {
         *timer = 0.0;
         
-        // Spawn enemies from outside the screen
-        // Screen boundaries (assuming 800x600, but we'll use larger values for safety)
         let screen_width = 1000.0;
         let screen_height = 800.0;
         
-        // Randomly choose which edge to spawn from
         let spawn_side = rand::random::<u8>() % 4;
         let (x, y) = match spawn_side {
             0 => { // Top edge
@@ -424,7 +386,7 @@ fn enemy_spawning(
             AnimatedSprite {
                 current_frame: 0,
                 animation_timer: 0.0,
-                animation_speed: 6.0, // 6 FPS
+                animation_speed: 6.0,
                 total_frames: 2,
                 is_swinging: false,
                 swing_color: 0,
@@ -440,7 +402,7 @@ fn enemy_movement(
 ) {
     for mut enemy_transform in enemy_query.iter_mut() {
         let direction = (game_state.player_position - enemy_transform.translation).normalize();
-        enemy_transform.translation += direction * 100.0 * time.delta_seconds(); // Increased from 50.0
+        enemy_transform.translation += direction * 100.0 * time.delta_seconds();
     }
 }
 
@@ -449,7 +411,6 @@ fn enemy_animation(
     sprite_assets: Res<SpriteAssets>,
     time: Res<Time>,
 ) {
-    // Check if assets are loaded
     if sprite_assets.enemy.is_empty() {
         return;
     }
@@ -461,12 +422,10 @@ fn enemy_animation(
             animated_sprite.current_frame = (animated_sprite.current_frame + 1) % animated_sprite.total_frames;
             animated_sprite.animation_timer = 0.0;
             
-            // Check bounds
             if animated_sprite.current_frame as usize >= sprite_assets.enemy.len() {
                 continue;
             }
             
-            // Update texture
             *texture = sprite_assets.enemy[animated_sprite.current_frame as usize].clone();
         }
     }
@@ -478,29 +437,24 @@ fn sword_collision(
     enemy_query: Query<(Entity, &Transform), With<Enemy>>,
     sprite_assets: Res<SpriteAssets>,
 ) {
-    // Check if assets are loaded
     if sprite_assets.item_drops.is_empty() {
         return;
     }
     
-    // Only check collision if player is swinging and on the right frame (frame 1-2 are the "active" frames)
     if !game_state.is_swinging || game_state.swing_frame < 1 || game_state.swing_frame > 2 {
         return;
     }
     
-    // Calculate sword position based on player position and direction
-    let sword_offset = game_state.last_direction * 50.0; // Increased from 25.0 for 4x sprites
+    let sword_offset = game_state.last_direction * 50.0;
     let sword_position = game_state.player_position + sword_offset;
     
     for (enemy_entity, enemy_transform) in enemy_query.iter() {
         let distance = sword_position.distance(enemy_transform.translation);
-        if distance < 60.0 { // Increased from 30.0 for 4x sprites
+        if distance < 60.0 {
             commands.entity(enemy_entity).despawn();
             
-            // Spawn sword drop
             let color = rand::random::<u8>() % 3;
             
-            // Check bounds
             if color as usize >= sprite_assets.item_drops.len() {
                 continue;
             }
@@ -526,37 +480,40 @@ fn collect_swords(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
     sword_query: Query<(Entity, &Transform, &Sword)>,
+    blockchain_client: Res<BlockchainClient>, // BLOCKCHAIN
 ) {
     for (sword_entity, sword_transform, sword) in sword_query.iter() {
         let distance = game_state.player_position.distance(sword_transform.translation);
-        if distance < 60.0 { // Increased from 30.0 for 4x sprites
+        if distance < 60.0 {
             game_state.swords_collected.push(sword.color);
-            // Change the sword color to the collected color
             game_state.swing_color = sword.color;
             commands.entity(sword_entity).despawn();
             
-            // Send the sword save to the blockchain task
-            if let Some(sender) = &game_state.blockchain_sender {
-                if let Err(e) = sender.send(sword.color) {
-                    eprintln!("Failed to send sword save to blockchain task: {}", e);
-                }
-            }
+            // BLOCKCHAIN SAVE - COMMENT OUT TO DISABLE
+            let client = blockchain_client.clone();
+            let color = sword.color;
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new().unwrap().block_on(async {
+                    if let Some(contract) = &client.clone().contract {
+                        if let Err(e) = contract.increment_sword(U256::from(color)).send().await {
+                            eprintln!("Failed to save sword to contract: {}", e);
+                        }
+                    }
+                });
+            });
         }
     }
 }
 
 fn update_ui(mut text_query: Query<&mut Text>, game_state: Res<GameState>) {
     if game_state.is_changed() {
-        // Count swords by color
         let mut color_counts = [0u32; 3];
         for &color in &game_state.swords_collected {
             color_counts[color as usize] += 1;
         }
         
-        // Create color names
         let color_names = ["Red", "Blue", "Green"];
         
-        // Build the display text
         let mut display_text = format!("Total Swords: {}\n", game_state.swords_collected.len());
         for (name, count) in color_names.iter().zip(color_counts.iter()) {
             display_text.push_str(&format!("{}: {} ", name, count));
@@ -567,5 +524,3 @@ fn update_ui(mut text_query: Query<&mut Text>, game_state: Res<GameState>) {
         }
     }
 }
-
-

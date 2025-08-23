@@ -1,95 +1,80 @@
+use bevy::prelude::*;
 use dotenv::dotenv;
 use ethers::prelude::{Provider, Http, SignerMiddleware, LocalWallet, abigen, Middleware};
 use ethers::signers::Signer;
 use eyre::Result;
 use std::{str::FromStr, sync::Arc};
-use ethers::types::{Address, U256};
+use ethers::types::Address;
 
 // Generate the contract bindings
 abigen!(
-    SwordCollection,
+    BlockchainContract,
     r#"[
         function getSwordCount(uint256 color) external view returns (uint256)
         function incrementSword(uint256 color) external
     ]"#
 );
 
-#[derive(Clone)]
+#[derive(Resource, Clone)]
 pub struct BlockchainClient {
     pub contract_client: Option<Arc<SignerMiddleware<Provider<Http>, LocalWallet>>>,
     pub contract_address: Option<Address>,
+    pub contract: Option<BlockchainContract<SignerMiddleware<Provider<Http>, LocalWallet>>>,
 }
 
-impl BlockchainClient {
-    pub async fn new() -> Result<Self> {
-        dotenv().ok();
+pub struct BlockchainPlugin;
 
-        println!("RPC_URL: {}", std::env::var("RPC_URL").unwrap());
-        println!("STYLUS_CONTRACT_ADDRESS: {}", std::env::var("STYLUS_CONTRACT_ADDRESS").unwrap());
-        println!("PRIVATE_KEY: {}", std::env::var("PRIVATE_KEY").unwrap());
-        
-        let mut client = BlockchainClient {
-            contract_client: None,
-            contract_address: None,
-        };
+impl Plugin for BlockchainPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, init_blockchain);
+    }
+}
 
-        if let (Ok(rpc_url), Ok(contract_addr), Ok(privkey)) = (
-            std::env::var("RPC_URL"),
-            std::env::var("STYLUS_CONTRACT_ADDRESS"),
-            std::env::var("PRIVATE_KEY"),
-        ) {
-            let provider = Provider::<Http>::try_from(rpc_url)?;
-            let wallet = LocalWallet::from_str(&privkey)?;
-            let chain_id = provider.get_chainid().await?.as_u64();
-            let client_arc = Arc::new(SignerMiddleware::new(
-                provider,
-                wallet.with_chain_id(chain_id),
-            ));
+fn init_blockchain(mut commands: Commands) {
+    // Initialize blockchain client in a blocking task since we can't use async in systems
+    let blockchain_client = std::thread::spawn(|| {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                init_blockchain_client().await
+            })
+    })
+    .join()
+    .unwrap()
+    .unwrap();
 
-            let contract_address: Address = contract_addr.parse()?;
-            let contract = SwordCollection::new(contract_address, client_arc.clone());
+    commands.insert_resource(blockchain_client);
+}
 
-            // Load existing swords
-            for color in 0u8..3u8 {
-                println!("Loading sword count for color: {}", color);
-                let count: U256 = contract.get_sword_count(U256::from(color)).call().await?;
-                println!("counting: {}", count);
-                println!("fin");
-            }
+async fn init_blockchain_client() -> Result<BlockchainClient> {
+    dotenv().ok();
 
-            client.contract_client = Some(client_arc);
-            client.contract_address = Some(contract_address);
-        }
+    let mut client = BlockchainClient {
+        contract_client: None,
+        contract_address: None,
+        contract: None,
+    };
 
-        Ok(client)
+    if let (Ok(rpc_url), Ok(contract_addr), Ok(privkey)) = (
+        std::env::var("RPC_URL"),
+        std::env::var("STYLUS_CONTRACT_ADDRESS"),
+        std::env::var("PRIVATE_KEY"),
+    ) {
+        let provider = Provider::<Http>::try_from(rpc_url)?;
+        let wallet = LocalWallet::from_str(&privkey)?;
+        let chain_id = provider.get_chainid().await?.as_u64();
+        let client_arc = Arc::new(SignerMiddleware::new(
+            provider,
+            wallet.with_chain_id(chain_id),
+        ));
+
+        let contract_address: Address = contract_addr.parse()?;
+        let contract = BlockchainContract::new(contract_address, client_arc.clone());
+
+        client.contract_client = Some(client_arc);
+        client.contract_address = Some(contract_address);
+        client.contract = Some(contract);
     }
 
-    pub async fn load_existing_swords(&self) -> Result<Vec<u8>> {
-        let mut swords_collected = Vec::new();
-        
-        if let (Some(client), Some(address)) = (&self.contract_client, self.contract_address) {
-            let contract = SwordCollection::new(address.clone(), client.clone());
-            
-            for color in 0u8..3u8 {
-                let count: U256 = contract.get_sword_count(U256::from(color)).call().await?;
-                for _ in 0..count.as_u64() {
-                    swords_collected.push(color);
-                }
-            }
-        }
-        
-        Ok(swords_collected)
-    }
-
-    pub async fn save_sword(&self, color: u8) -> Result<()> {
-        if let (Some(client), Some(address)) = (&self.contract_client, self.contract_address) {
-            let contract = SwordCollection::new(address.clone(), client.clone());
-            if let Err(e) = contract.increment_sword(U256::from(color)).send().await {
-                eprintln!("Failed to save sword to contract: {}", e);
-            }
-        }
-        Ok(())
-    }
-
-
+    Ok(client)
 }
