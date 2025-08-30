@@ -1,11 +1,7 @@
 use bevy::prelude::*;
-use eyre::Result;
-
-mod blockchain;
-
-// BLOCKCHAIN CODE - COMMENT OUT TO DISABLE
+use bevy_stylus_plugin::{BlockchainPlugin, BlockchainClient};
 use ethers::types::U256;
-use blockchain::{BlockchainPlugin, BlockchainClient};
+use eyre::Result;
 
 // BLOCKCHAIN FUNCTIONS - COMMENT OUT TO DISABLE
 pub fn init_game(
@@ -15,9 +11,6 @@ pub fn init_game(
     blockchain_client: Res<BlockchainClient>,
     mut game_state: ResMut<GameState>
 ) {
-    // Load assets first - this is now handled separately
-    // load_assets(commands, asset_server, &mut sprite_assets);
-    
     if game_state.swords_collected.is_empty() {
         let client = blockchain_client.clone();
         let swords = std::thread::spawn(move || {
@@ -86,16 +79,7 @@ struct Sword {
 }
 
 #[derive(Component)]
-struct SwordSwing {
-    direction: Vec3,
-    animation_frame: u8,
-    animation_timer: f32,
-}
-
-#[derive(Component)]
-struct ItemDrop {
-    color: u8,
-}
+struct ItemDrop;
 
 #[derive(Component)]
 struct AnimatedSprite {
@@ -104,7 +88,6 @@ struct AnimatedSprite {
     animation_speed: f32,
     total_frames: u8,
     is_swinging: bool,
-    swing_color: u8,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -167,7 +150,7 @@ fn main() -> Result<()> {
             item_drops: Vec::new(),
         })
         .add_systems(Startup, load_assets)
-        .add_systems(Startup, init_game.after(blockchain::init_blockchain))
+        .add_systems(Startup, init_game.after(bevy_stylus_plugin::init_blockchain))
         .add_systems(Startup, setup.after(init_game))
         .add_systems(Update, (
             player_movement,
@@ -243,7 +226,6 @@ pub fn setup(mut commands: Commands, sprite_assets: Res<SpriteAssets>) {
             animation_speed: 8.0,
             total_frames: 2,
             is_swinging: false,
-            swing_color: 0,
         },
     ));
 
@@ -433,7 +415,6 @@ fn enemy_spawning(
                 animation_speed: 6.0,
                 total_frames: 2,
                 is_swinging: false,
-                swing_color: 0,
             },
         ));
     }
@@ -446,7 +427,19 @@ fn enemy_movement(
 ) {
     for mut enemy_transform in enemy_query.iter_mut() {
         let direction = (game_state.player_position - enemy_transform.translation).normalize();
-        enemy_transform.translation += direction * 100.0 * time.delta_seconds();
+        let distance_to_player = game_state.player_position.distance(enemy_transform.translation);
+        
+        // Keep enemies at a safe distance (120 pixels) from the player
+        let safe_distance = 120.0;
+        
+        if distance_to_player > safe_distance {
+            // Move towards player if too far
+            enemy_transform.translation += direction * 100.0 * time.delta_seconds();
+        } else if distance_to_player < safe_distance - 20.0 {
+            // Move away from player if too close
+            enemy_transform.translation -= direction * 100.0 * time.delta_seconds();
+        }
+        // If within the safe distance range, don't move
     }
 }
 
@@ -514,7 +507,7 @@ fn sword_collision(
                     ..default()
                 },
                 Sword { color },
-                ItemDrop { color },
+                ItemDrop,
             ));
         }
     }

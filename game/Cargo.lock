@@ -491,6 +491,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy-stylus-plugin"
+version = "0.1.0"
+source = "git+https://github.com/turupawn/bevy-stylus-plugin#88e0c23a0046e00fc2c65cfaa6c8f74ad666e50e"
+dependencies = [
+ "bevy",
+ "dotenv",
+ "ethers",
+ "eyre",
+ "serde",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "bevy_a11y"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2964,6 +2978,7 @@ name = "game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy-stylus-plugin",
  "dotenv",
  "ethers",
  "eyre",
