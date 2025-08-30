@@ -2968,8 +2968,10 @@ dependencies = [
  "ethers",
  "eyre",
  "rand 0.8.5",
+ "serde",
  "stylus-sdk",
  "tokio",
+ "toml",
 ]
 
 [[package]]

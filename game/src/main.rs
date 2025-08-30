@@ -7,6 +7,73 @@ mod blockchain;
 use ethers::types::U256;
 use blockchain::{BlockchainPlugin, BlockchainClient};
 
+// BLOCKCHAIN FUNCTIONS - COMMENT OUT TO DISABLE
+pub fn init_game(
+    _commands: Commands,
+    _asset_server: Res<AssetServer>,
+    _sprite_assets: ResMut<SpriteAssets>,
+    blockchain_client: Res<BlockchainClient>,
+    mut game_state: ResMut<GameState>
+) {
+    // Load assets first - this is now handled separately
+    // load_assets(commands, asset_server, &mut sprite_assets);
+    
+    if game_state.swords_collected.is_empty() {
+        let client = blockchain_client.clone();
+        let swords = std::thread::spawn(move || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let mut swords_collected = Vec::new();
+                if let Some(contract) = &client.contract {
+                    if let Ok((red_count, blue_count, green_count)) = contract.get_sword_counts().call().await {
+                        for _ in 0..red_count.as_u64() {
+                            swords_collected.push(0); // Red
+                        }
+                        for _ in 0..green_count.as_u64() {
+                            swords_collected.push(1); // Green
+                        }
+                        for _ in 0..blue_count.as_u64() {
+                            swords_collected.push(2); // Blue
+                        }
+                    } else {
+                        eprintln!("Failed to get sword counts");
+                    }
+                }
+                swords_collected
+            })
+        }).join().unwrap_or_default();
+        game_state.swords_collected = swords;
+    }
+}
+
+fn collect_swords(
+    mut commands: Commands,
+    mut game_state: ResMut<GameState>,
+    sword_query: Query<(Entity, &Transform, &Sword)>,
+    blockchain_client: Res<BlockchainClient>, // BLOCKCHAIN
+) {
+    for (sword_entity, sword_transform, sword) in sword_query.iter() {
+        let distance = game_state.player_position.distance(sword_transform.translation);
+        if distance < 60.0 {
+            game_state.swords_collected.push(sword.color);
+            game_state.swing_color = sword.color;
+            commands.entity(sword_entity).despawn();
+            
+            // BLOCKCHAIN SAVE - COMMENT OUT TO DISABLE
+            let client = blockchain_client.clone();
+            let color = sword.color;
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new().unwrap().block_on(async {
+                    if let Some(contract) = &client.clone().contract {
+                        if let Err(e) = contract.increment_sword(U256::from(color)).send().await {
+                            eprintln!("Failed to save sword to contract: {}", e);
+                        }
+                    }
+                });
+            });
+        }
+    }
+}
+
 #[derive(Component)]
 struct Player;
 
@@ -49,7 +116,7 @@ enum PlayerDirection {
 }
 
 #[derive(Resource)]
-struct SpriteAssets {
+pub struct SpriteAssets {
     player_up: Vec<Handle<Image>>,
     player_down: Vec<Handle<Image>>,
     player_left: Vec<Handle<Image>>,
@@ -60,8 +127,8 @@ struct SpriteAssets {
 }
 
 #[derive(Resource)]
-struct GameState {
-    swords_collected: Vec<u8>,
+pub struct GameState {
+    pub swords_collected: Vec<u8>,
     player_position: Vec3,
     last_direction: Vec3,
     player_moving: bool,
@@ -99,8 +166,9 @@ fn main() -> Result<()> {
             sword_swings: vec![Vec::new(); 3],
             item_drops: Vec::new(),
         })
-        .add_systems(Startup, (load_assets, setup.after(load_assets)))
-        .add_systems(Update, load_existing_swords.run_if(resource_exists::<BlockchainClient>)) // BLOCKCHAIN
+        .add_systems(Startup, load_assets)
+        .add_systems(Startup, init_game.after(blockchain::init_blockchain))
+        .add_systems(Startup, setup.after(init_game))
         .add_systems(Update, (
             player_movement,
             player_animation,
@@ -117,32 +185,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// BLOCKCHAIN FUNCTIONS - COMMENT OUT TO DISABLE
-fn load_existing_swords(blockchain_client: Res<BlockchainClient>, mut game_state: ResMut<GameState>) {
-    if game_state.swords_collected.is_empty() {
-        let client = blockchain_client.clone();
-        let swords = std::thread::spawn(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let mut swords_collected = Vec::new();
-                if let Some(contract) = &client.contract {
-                    for color in 0u8..3u8 {
-                        if let Ok(count) = contract.get_sword_count(U256::from(color)).call().await {
-                            for _ in 0..count.as_u64() {
-                                swords_collected.push(color);
-                            }
-                        }
-                    }
-                }
-                swords_collected
-            })
-        }).join().unwrap_or_default();
-        game_state.swords_collected = swords;
-    }
-}
-
 
 fn load_assets(
-    _commands: Commands,
     asset_server: Res<AssetServer>,
     mut sprite_assets: ResMut<SpriteAssets>,
 ) {
@@ -158,7 +202,7 @@ fn load_assets(
     sprite_assets.enemy.push(asset_server.load("sprites/enemy/enemy_1.png"));
     sprite_assets.enemy.push(asset_server.load("sprites/enemy/enemy_2.png"));
     
-    let color_names = ["red", "blue", "green"];
+    let color_names = ["red", "green", "blue"];
     let direction_names = ["up", "down", "left", "right"];
     
     for (color_idx, color_name) in color_names.iter().enumerate() {
@@ -178,7 +222,7 @@ fn load_assets(
     }
 }
 
-fn setup(mut commands: Commands, sprite_assets: Res<SpriteAssets>) {
+pub fn setup(mut commands: Commands, sprite_assets: Res<SpriteAssets>) {
     commands.spawn(Camera2dBundle::default());
 
     if sprite_assets.player_right.is_empty() {
@@ -476,35 +520,6 @@ fn sword_collision(
     }
 }
 
-fn collect_swords(
-    mut commands: Commands,
-    mut game_state: ResMut<GameState>,
-    sword_query: Query<(Entity, &Transform, &Sword)>,
-    blockchain_client: Res<BlockchainClient>, // BLOCKCHAIN
-) {
-    for (sword_entity, sword_transform, sword) in sword_query.iter() {
-        let distance = game_state.player_position.distance(sword_transform.translation);
-        if distance < 60.0 {
-            game_state.swords_collected.push(sword.color);
-            game_state.swing_color = sword.color;
-            commands.entity(sword_entity).despawn();
-            
-            // BLOCKCHAIN SAVE - COMMENT OUT TO DISABLE
-            let client = blockchain_client.clone();
-            let color = sword.color;
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    if let Some(contract) = &client.clone().contract {
-                        if let Err(e) = contract.increment_sword(U256::from(color)).send().await {
-                            eprintln!("Failed to save sword to contract: {}", e);
-                        }
-                    }
-                });
-            });
-        }
-    }
-}
-
 fn update_ui(mut text_query: Query<&mut Text>, game_state: Res<GameState>) {
     if game_state.is_changed() {
         let mut color_counts = [0u32; 3];
@@ -512,7 +527,7 @@ fn update_ui(mut text_query: Query<&mut Text>, game_state: Res<GameState>) {
             color_counts[color as usize] += 1;
         }
         
-        let color_names = ["Red", "Blue", "Green"];
+        let color_names = ["Red", "Green", "Blue"];
         
         let mut display_text = format!("Total Swords: {}\n", game_state.swords_collected.len());
         for (name, count) in color_names.iter().zip(color_counts.iter()) {
