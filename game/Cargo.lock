@@ -493,7 +493,7 @@ dependencies = [
 [[package]]
 name = "bevy-stylus-plugin"
 version = "0.1.0"
-source = "git+https://github.com/turupawn/bevy-stylus-plugin#88e0c23a0046e00fc2c65cfaa6c8f74ad666e50e"
+source = "git+https://github.com/turupawn/bevy-stylus-plugin?branch=master#0d5d91f8d9ec9091d25d6f97cfde44df0ef246fc"
 dependencies = [
  "bevy",
  "dotenv",

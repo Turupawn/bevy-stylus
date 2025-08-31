@@ -1,49 +1,35 @@
 use bevy::prelude::*;
-use bevy_stylus_plugin::{BlockchainPlugin, BlockchainClient};
-use ethers::types::U256;
+//use bevy_stylus_plugin::{StylusPlugin, StylusClient};
 use eyre::Result;
 
 pub fn init_game(
     _commands: Commands,
     _asset_server: Res<AssetServer>,
     _sprite_assets: ResMut<SpriteAssets>,
-    blockchain_client: Res<BlockchainClient>,
+    //stylus_client: Res<StylusClient>,
     mut game_state: ResMut<GameState>
 ) {
-    game_state.swords_collected = Vec::new();
     /*
+    if let Some(contract) = &stylus_client.contract {
+        if let Ok((red, green, blue)) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(contract.get_sword_counts().call()) 
+        {
+            game_state.swords_collected = vec![
+                vec![0; red.as_u64() as usize], // Red swords
+                vec![1; green.as_u64() as usize], // Green swords  
+                vec![2; blue.as_u64() as usize], // Blue swords
+            ].into_iter().flatten().collect();
+        }
+    }
     */
-    game_state.swords_collected = Vec::new();
-    let client = blockchain_client.clone();
-    let swords = std::thread::spawn(move || {
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let mut swords_collected = Vec::new();
-            if let Some(contract) = &client.contract {
-                if let Ok((red_count, green_count, blue_count)) = contract.get_sword_counts().call().await {
-                    for _ in 0..red_count.as_u64() {
-                        swords_collected.push(0); // Red
-                    }
-                    for _ in 0..green_count.as_u64() {
-                        swords_collected.push(1); // Green
-                    }
-                    for _ in 0..blue_count.as_u64() {
-                        swords_collected.push(2); // Blue
-                    }
-                } else {
-                    eprintln!("Failed to get sword counts");
-                }
-            }
-            swords_collected
-        })
-    }).join().unwrap_or_default();
-    game_state.swords_collected = swords;
 }
 
 fn collect_swords(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
     sword_query: Query<(Entity, &Transform, &Sword)>,
-    blockchain_client: Res<BlockchainClient>, // BLOCKCHAIN
+    //stylus_client: Res<StylusClient>,
 ) {
     for (sword_entity, sword_transform, sword) in sword_query.iter() {
         let distance = game_state.player_position.distance(sword_transform.translation);
@@ -51,19 +37,19 @@ fn collect_swords(
             game_state.swords_collected.push(sword.color);
             game_state.swing_color = sword.color;
             commands.entity(sword_entity).despawn();
+            
             /*
-            */
-            let client = blockchain_client.clone();
-            let color = sword.color;
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new().unwrap().block_on(async {
-                    if let Some(contract) = &client.clone().contract {
-                        if let Err(e) = contract.increment_sword(U256::from(color)).send().await {
-                            eprintln!("Failed to save sword to contract: {}", e);
-                        }
-                    }
+            if let Some(contract) = &stylus_client.contract {
+                let contract = contract.clone();
+                let color = sword.color;
+                let stylus_client_ref = stylus_client.clone();
+                std::thread::spawn(move || {
+                    tokio::runtime::Runtime::new().unwrap().block_on(async {
+                        let _ = contract.increment_sword(stylus_client_ref.u8_to_u256(color)).send().await;
+                    });
                 });
-            });
+            }
+            */
         }
     }
 }
@@ -129,7 +115,7 @@ const ENEMY_SPAWN_RATE: f32 = 2.0;
 fn main() -> Result<()> {
     App::new()
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .add_plugins(BlockchainPlugin)
+        //.add_plugins(StylusPlugin)
         .insert_resource(GameState {
             swords_collected: Vec::new(),
             player_position: Vec3::ZERO,
@@ -151,8 +137,8 @@ fn main() -> Result<()> {
             item_drops: Vec::new(),
         })
         .add_systems(Startup, load_assets)        
-        //.add_systems(Startup, init_game.after(load_assets))
-        .add_systems(Startup, init_game.after(bevy_stylus_plugin::init_blockchain))
+        .add_systems(Startup, init_game.after(load_assets))
+        //.add_systems(Startup, init_game.after(bevy_stylus_plugin::init_stylus))
         .add_systems(Startup, setup.after(init_game))
         .add_systems(Update, (
             player_movement,
