@@ -11,33 +11,32 @@ pub fn init_game(
     mut game_state: ResMut<GameState>
 ) {
     game_state.swords_collected = Vec::new();
-    if game_state.swords_collected.is_empty() {
-        let client = blockchain_client.clone();
-        let swords = std::thread::spawn(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let mut swords_collected = Vec::new();
-                if let Some(contract) = &client.contract {
-                    if let Ok((red_count, green_count, blue_count)) = contract.get_sword_counts().call().await {
-                        for _ in 0..red_count.as_u64() {
-                            swords_collected.push(0); // Red
-                        }
-                        for _ in 0..green_count.as_u64() {
-                            swords_collected.push(1); // Green
-                        }
-                        for _ in 0..blue_count.as_u64() {
-                            swords_collected.push(2); // Blue
-                        }
-                    } else {
-                        eprintln!("Failed to get sword counts");
-                    }
-                }
-                swords_collected
-            })
-        }).join().unwrap_or_default();
-        game_state.swords_collected = swords;
-    }
     /*
     */
+    game_state.swords_collected = Vec::new();
+    let client = blockchain_client.clone();
+    let swords = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut swords_collected = Vec::new();
+            if let Some(contract) = &client.contract {
+                if let Ok((red_count, green_count, blue_count)) = contract.get_sword_counts().call().await {
+                    for _ in 0..red_count.as_u64() {
+                        swords_collected.push(0); // Red
+                    }
+                    for _ in 0..green_count.as_u64() {
+                        swords_collected.push(1); // Green
+                    }
+                    for _ in 0..blue_count.as_u64() {
+                        swords_collected.push(2); // Blue
+                    }
+                } else {
+                    eprintln!("Failed to get sword counts");
+                }
+            }
+            swords_collected
+        })
+    }).join().unwrap_or_default();
+    game_state.swords_collected = swords;
 }
 
 fn collect_swords(
@@ -52,7 +51,8 @@ fn collect_swords(
             game_state.swords_collected.push(sword.color);
             game_state.swing_color = sword.color;
             commands.entity(sword_entity).despawn();
-            
+            /*
+            */
             let client = blockchain_client.clone();
             let color = sword.color;
             std::thread::spawn(move || {
@@ -64,8 +64,6 @@ fn collect_swords(
                     }
                 });
             });
-            /*
-            */
         }
     }
 }
@@ -152,7 +150,8 @@ fn main() -> Result<()> {
             sword_swings: vec![Vec::new(); 3],
             item_drops: Vec::new(),
         })
-        .add_systems(Startup, load_assets)
+        .add_systems(Startup, load_assets)        
+        //.add_systems(Startup, init_game.after(load_assets))
         .add_systems(Startup, init_game.after(bevy_stylus_plugin::init_blockchain))
         .add_systems(Startup, setup.after(init_game))
         .add_systems(Update, (
