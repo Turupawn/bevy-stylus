@@ -3,7 +3,6 @@ use bevy_stylus_plugin::{BlockchainPlugin, BlockchainClient};
 use ethers::types::U256;
 use eyre::Result;
 
-// BLOCKCHAIN FUNCTIONS - COMMENT OUT TO DISABLE
 pub fn init_game(
     _commands: Commands,
     _asset_server: Res<AssetServer>,
@@ -11,13 +10,14 @@ pub fn init_game(
     blockchain_client: Res<BlockchainClient>,
     mut game_state: ResMut<GameState>
 ) {
+    game_state.swords_collected = Vec::new();
     if game_state.swords_collected.is_empty() {
         let client = blockchain_client.clone();
         let swords = std::thread::spawn(move || {
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let mut swords_collected = Vec::new();
                 if let Some(contract) = &client.contract {
-                    if let Ok((red_count, blue_count, green_count)) = contract.get_sword_counts().call().await {
+                    if let Ok((red_count, green_count, blue_count)) = contract.get_sword_counts().call().await {
                         for _ in 0..red_count.as_u64() {
                             swords_collected.push(0); // Red
                         }
@@ -36,6 +36,8 @@ pub fn init_game(
         }).join().unwrap_or_default();
         game_state.swords_collected = swords;
     }
+    /*
+    */
 }
 
 fn collect_swords(
@@ -51,7 +53,6 @@ fn collect_swords(
             game_state.swing_color = sword.color;
             commands.entity(sword_entity).despawn();
             
-            // BLOCKCHAIN SAVE - COMMENT OUT TO DISABLE
             let client = blockchain_client.clone();
             let color = sword.color;
             std::thread::spawn(move || {
@@ -63,6 +64,8 @@ fn collect_swords(
                     }
                 });
             });
+            /*
+            */
         }
     }
 }
@@ -128,7 +131,7 @@ const ENEMY_SPAWN_RATE: f32 = 2.0;
 fn main() -> Result<()> {
     App::new()
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .add_plugins(BlockchainPlugin) // BLOCKCHAIN
+        .add_plugins(BlockchainPlugin)
         .insert_resource(GameState {
             swords_collected: Vec::new(),
             player_position: Vec3::ZERO,
@@ -188,12 +191,12 @@ fn load_assets(
     let color_names = ["red", "green", "blue"];
     let direction_names = ["up", "down", "left", "right"];
     
-    for (color_idx, color_name) in color_names.iter().enumerate() {
-        sprite_assets.sword_swings[color_idx] = Vec::new();
+    for (_color_idx, color_name) in color_names.iter().enumerate() {
+        sprite_assets.sword_swings[_color_idx] = Vec::new();
         for (dir_idx, dir_name) in direction_names.iter().enumerate() {
             for frame in 0..4 {
                 let _sprite_idx = dir_idx * 4 + frame;
-                sprite_assets.sword_swings[color_idx].push(
+                sprite_assets.sword_swings[_color_idx].push(
                     asset_server.load(&format!("sprites/swords/{}_{}_{}.png", color_name, dir_name, frame + 1))
                 );
             }
@@ -430,7 +433,7 @@ fn enemy_movement(
         let distance_to_player = game_state.player_position.distance(enemy_transform.translation);
         
         // Keep enemies at a safe distance (120 pixels) from the player
-        let safe_distance = 120.0;
+        let safe_distance = 80.0;
         
         if distance_to_player > safe_distance {
             // Move towards player if too far
